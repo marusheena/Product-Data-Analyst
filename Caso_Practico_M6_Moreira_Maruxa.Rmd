@@ -1,0 +1,462 @@
+---
+output:
+  word_document: default
+  html_document: default
+---
+q1---
+title: "Análisis de Precios de Vinos - Vivino.com"
+author: "Maruxa Moreira"
+date: "2024-03-20"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# instalación de librería lmtest
+if (!require("lmtest")) install.packages("lmtest")
+
+# carga de librerías requeridas
+library("tidyverse")
+library(dplyr)
+library(ggplot2)
+library(lmtest)
+library(caret)
+```
+
+#0.- Introducción
+
+Vivino es un mercado de vinos en línea que ofrece una amplia selección de vinos 
+a precios competitivos. Este análisis se centra en desarrollar un modelo de 
+predicción de precios y realizar comparaciones entre diferentes tipos de vinos 
+utilizando datos de Vivino.com.
+
+## Variables del Dataset
+
+- Name: Nombre del vino
+- Country: País de procedencia
+- Region: Región de procedencia
+- Winery: Bodega que produce el vino
+- Rating: Calificación dada por el usuario
+- NumberOfRatings: Número de personas que calificaron el vino
+- Price: Precio de la botella
+- Year: Año de cosecha
+- wine_type: Tipo de vino
+
+#1.- **Datos**
+
+```{r data}
+df_wines <- read.csv("/Users/maruxamoreiraperez/Desktop/EscritorioMaru/Cursos/MacAir_Data Science /Modulo 6_Estadistica/CaseToSolve_M6/df_wines.csv")
+
+glimpse(df_wines)
+```
+
+#2.- **EDA**
+
+```{r EDA1_estructura}
+# Estructura básica de los datos
+str(df_wines)
+```
+
+```{r EDA2_resumen}
+# Resumen estadístico
+summary(df_wines)
+```
+
+```{r EDA3_calidad}
+# Verificar NA's y duplicados
+na_count <- colSums(is.na(df_wines))
+print("Valores NA por columna:")
+print(na_count)
+
+duplicados <- sum(duplicated(df_wines))
+print("Número de filas duplicadas:")
+print(duplicados)
+```
+
+```{r EDA4_tipos_vino}
+# Tipos únicos de vino
+print("Tipos de vino únicos:")
+table(df_wines$wine_type)
+```
+
+```{r EDA5_precios}
+# Resumen estadístico de precios
+summary(df_wines$Price)
+
+# Tabla de frecuencias por rangos de precios
+breaks <- c(0, 10, 30, 50, max(df_wines$Price))
+precio_categorias <- cut(df_wines$Price, breaks=breaks, 
+                        labels=c("Económico (<10€)", 
+                               "Medio (10-30€)", 
+                               "Premium (30-50€)", 
+                               "Alta gama (>50€)"))
+tabla_precios <- table(precio_categorias)
+print("\nDistribución por segmentos de precio:")
+print(tabla_precios)
+print("\nPorcentajes por segmento:")
+print(round(prop.table(tabla_precios) * 100, 2))
+```
+
+```{r EDA6_valoraciones}
+# Resumen estadístico de valoraciones
+print("Resumen de Ratings:")
+summary(df_wines$Rating)
+
+print("\nResumen de Número de Reseñas:")
+summary(df_wines$NumberOfRatings)
+
+# Veamos la relación entre Rating y NumberOfRatings
+# Creamos categorías para el número de reseñas
+breaks_ratings <- c(0, 100, 500, 1000, max(df_wines$NumberOfRatings))
+rating_categorias <- cut(df_wines$NumberOfRatings, breaks=breaks_ratings,
+                        labels=c("Pocas (<100)",
+                               "Moderadas (100-500)",
+                               "Muchas (500-1000)",
+                               "Muy populares (>1000)"))
+
+# Tabla cruzada de valoraciones medias por categoría
+print("\nValoración media por número de reseñas:")
+tapply(df_wines$Rating, rating_categorias, mean)
+```
+
+```{r EDA7_precio_tipo}
+
+# Estadísticas detalladas por tipo de vino
+estadisticas_por_tipo <- df_wines %>%
+  group_by(wine_type) %>%
+  summarise(
+    n = n(),                          # Número de vinos
+    precio_min = min(Price),          # Precio mínimo
+    precio_max = max(Price),          # Precio máximo
+    precio_medio = mean(Price),       # Precio medio
+    precio_mediana = median(Price),   # Precio mediana
+    desv_est = sd(Price),            # Desviación estándar
+    cv = sd(Price)/mean(Price)*100   # Coeficiente de variación
+  ) %>%
+  arrange(desc(precio_medio))         # Ordenar por precio medio
+
+print("Estadísticas de precio por tipo de vino:")
+print(estadisticas_por_tipo)
+# Boxplot de precio por tipo de vino
+boxplot(Price ~ wine_type, data = df_wines,
+        main = "Distribución de Precios por Tipo de Vino",
+        xlab = "Tipo de Vino",
+        ylab = "Precio (€)",
+        col = "lightblue")
+
+# Estadísticas por tipo de vino
+print("Precio medio por tipo de vino:")
+round(tapply(df_wines$Price, df_wines$wine_type, mean), 2)
+
+print("\nPrecio mediano por tipo de vino:")
+round(tapply(df_wines$Price, df_wines$wine_type, median), 2)
+```
+
+```{r EDA8_visualizaciones}
+# Boxplot de precios
+boxplot(df_wines$Price, 
+        main="Distribución de Precios",
+        ylab="Precio (€)",
+        col="skyblue")
+
+# Histograma de precios
+hist(df_wines$Price, 
+     main="Histograma de Precios",
+     xlab="Precio (€)",
+     col="lightblue",
+     breaks=30)
+
+```
+
+```{r EDA9_correlaciones}
+# Seleccionamos variables numéricas
+vinos_num <- df_wines %>% 
+  select_if(is.numeric)
+
+# Matriz de correlaciones
+round(cor(vinos_num, method = "pearson"), 3)
+
+# Visualización de correlaciones
+library(corrplot)
+matriz_correlacion <- cor(vinos_num)
+corrplot(matriz_correlacion, type = "full")
+```
+
+#3.- ***Modelo***
+
+##3.1.- ***Train & Test***
+
+```{r train_test}
+# Establecer semilla para reproducibilidad
+set.seed(1234)
+
+# Crear índices para la división (80-20)
+train_index <- createDataPartition(df_wines$Price, p = 0.80, list = FALSE)
+
+# Dividir en train y test
+train_data <- df_wines[train_index, ]
+test_data <- df_wines[-train_index, ]
+
+# Separar variables independientes y dependiente, y escalar las variables numéricas para que estén en la misma magnitud
+X_train <- train_data %>%
+  mutate(
+    Rating_sc = scale(Rating),
+    NumberOfRatings_sc = scale(NumberOfRatings),
+    Year1_sc = scale(Year1),
+    wine_type = as.factor(wine_type)  # Convertimos a factor
+  ) %>%
+  select(Rating_sc, NumberOfRatings_sc, Year1_sc, wine_type)
+
+y_train <- train_data$Price
+
+# Hacer lo mismo para test
+X_test <- test_data %>%
+  mutate(
+    Rating_sc = scale(Rating),
+    NumberOfRatings_sc = scale(NumberOfRatings),
+    Year1_sc = scale(Year1),
+    wine_type = as.factor(wine_type)  # Convertimos a factor
+  ) %>%
+  select(Rating_sc, NumberOfRatings_sc, Year1_sc, wine_type)
+
+y_test <- test_data$Price
+
+# Verificar estructura
+str(X_train)
+```
+
+```{r}
+# Verificar que el escalado funcionó (las medias deberían ser ~0)
+print("Summary de variables escaladas en train:")
+summary(X_train %>% select(Rating_sc, NumberOfRatings_sc, Year1_sc))
+
+print("\nSummary de variables escaladas en test:")
+summary(X_test %>% select(Rating_sc, NumberOfRatings_sc, Year1_sc))
+```
+
+
+##3.2.- ***Modelo***
+
+```{r modelo_regresion}
+# Eliminamos la notación científica
+options(scipen = 999)
+
+# Creamos el modelo de regresión lineal
+modelo <- lm(y_train ~ ., data = X_train)
+
+# Resultado inicial
+print(modelo)
+```
+
+## 3.3.- coef. del modelo 
+
+```{r, echo=FALSE}
+summary(modelo)
+```
+
+```{r modelo_refinado}
+# Creamos nuevo conjunto de datos sin NumberOfRatings
+X_train_refinado <- X_train %>%
+  select(Rating_sc, Year1_sc, wine_type)
+
+X_test_refinado <- X_test %>%
+  select(Rating_sc, Year1_sc, wine_type)
+
+# Creamos el modelo refinado
+modelo_refinado <- lm(y_train ~ ., data = X_train_refinado)
+
+# Vemos el resumen del nuevo modelo
+summary(modelo_refinado)
+```
+
+## Evaluación del Modelo Refinado
+
+```{r rmse}
+# 2. RMSE en train
+rmse_train <- sqrt(mean((modelo_refinado$fitted.values - y_train)^2))
+print(paste("RMSE en train:", round(rmse_train, 2)))
+
+# 3. RMSE en test
+pred_test <- predict(modelo_refinado, X_test_refinado)
+rmse_test <- sqrt(mean((pred_test - y_test)^2))
+print(paste("RMSE en test:", round(rmse_test, 2)))
+```
+
+#4.- ***ANOVA***
+
+```{r anova}
+# Realizamos el ANOVA
+anova_vinos <- aov(Price ~ wine_type, data = df_wines)
+
+# Vemos el resumen
+summary(anova_vinos)
+```
+
+
+## 4.1.- Verificación de Supuestos
+```{r supuestos_anova}
+# Test de normalidad con una muestra
+set.seed(123)
+muestra_residuos <- sample(anova_vinos$residuals, 5000)
+shapiro.test(muestra_residuos)
+
+# Test de homocedasticidad
+bartlett.test(Price ~ wine_type, data = df_wines)
+
+# Gráficos básicos diagnósticos
+par(mfrow=c(1,2))
+# QQ plot para normalidad
+qqnorm(anova_vinos$residuals)
+qqline(anova_vinos$residuals)
+
+# Boxplot para homocedasticidad
+boxplot(Price ~ wine_type, data = df_wines)
+```
+
+```{r diagnosticos_anova, fig.height=8, fig.width=10}
+# Gráficos diagnósticos completos
+par(mfrow=c(2,2))
+plot(anova_vinos)
+```
+
+
+##4.1.- ***Tukey***
+
+```{r tukey}
+# Test de Tukey para comparaciones múltiples
+tukey_test <- TukeyHSD(anova_vinos)
+print(tukey_test)
+
+# Visualización de las comparaciones
+# Visualización
+par(mar=c(5,8,4,2))  # Ajustamos márgenes
+plot(tukey_test)
+```
+
+
+#5.- ***CONCLUSIONES***
+
+## Análisis Exploratorio de Datos (EDA)
+
+### 1. Estructura del Dataset
+* **Dimensiones del dataset**:
+  - 13,171 observaciones de vinos tintos
+  - 10 variables que describen características y valoraciones
+
+* **Variables clave para el análisis**:
+  - **Price**: Variable objetivo para nuestro modelo de predicción
+  - **Rating**: Valoraciones de usuarios (calidad percibida)
+  - **NumberOfRatings**: Número de observaciones usadas para calcular el rating
+  - **Year1**: Año de cosecha (2023 para vinos mezcla)
+  - **Variables categóricas**: Información de origen (Country, Region, Winery, wine_type)
+
+### 2. Análisis Inicial de Variables Clave
+**Precios**:
+  - Rango completo: 3.15€ (precio más bajo) - 99.95€ (precio más)
+  - Distribución por niveles de precio:
+    * Económicos (<10€): 27.52% de los vinos
+    * Precio medio (10-30€): 52.31% de los vinos
+    * Premium (30-50€): 13.45% de los vinos
+    * Alta gama (>50€): 6.72% de los vinos
+  - Esta segmentación nos ayuda a:
+    * Entender la estructura del mercado
+    * Identificar posibles outliers para el modelo
+    * Planificar el tratamiento de precios extremos
+
+**Sistema de Valoraciones**:
+  - Rating: rango de 2.2 a 4.7 estrellas
+  - NumberOfRatings: desde 25 hasta 86,839 valoraciones por vino
+  - La mayoría de valoraciones están entre 3.7 y 4.0 estrellas
+  - Media de valoraciones: 3.839 (distribución bastante simétrica)
+
+### 3. Calidad de los Datos
+**Integridad de datos**:
+  - No hay valores faltantes (NA's)
+  - No hay registros duplicados
+  - Dataset limpio y completo para el análisis
+
+### 4. Análisis de la Distribución de Precios
+**Distribución de la muestra**:
+   - Tinto: 8118 vinos (mayoría de la muestra)
+   - Blanco: 3705 vinos
+   - Espumoso: 953 vinos
+   - Rosado: 395 vinos
+
+**Patrones de precio**:
+   - Todos los vinos tienen vinos premium, es decir, por encima de 60€ (valores atípicos)
+   - Los espumosos y tintos son los más caros en promedio (25€)
+   - Los blancos tienen un precio medio intermedio (17.7€) destacando por tener
+    el mayor número de valores atípicos por encima del promedio.
+   - Los rosados son en promedio los más económicos (11.7€)
+
+**Implicaciones para el modelo**:
+   - El tipo de vino es claramente relevante para predecir el precio
+   - Debemos considerar que cada tipo tiene sus propios patrones de precio
+   - La presencia de valores atípicos sugiere que necesitaremos más variables además del tipo para predecir       bien el precio
+
+### 5. Preparación del modelo
+**Análisis de Correlaciones**:
+- Analizamos las correlaciones para entender las relaciones entre variables:
+  * Con el precio (variable dependiente):
+    - Rating (0.621): relación directa moderada entre valoración y precio
+    - NumberOfRatings (0.029): el número de observaciones para calcular el rating no influye en el precio
+    - Year1 (-0.310): tendencia a que los vinos más antiguos sean más caros
+
+**Implicaciones para el modelo**:
+  * No hay multicolinealidad (correlaciones entre variables independientes < 0.2)
+  * Mantendremos todas las variables para el modelo inicial
+  * La variable wine_type será clave para el ANOVA
+
+### 6. Output del modelo
+
+  * El Rating influye significativamente en el precio: cuando un vino 
+    tiene una estrella más de valoración, su precio sube unos 10.46€.
+  * Los vinos más viejos son más caros; aumenta el precio en unos 6.11€
+  * Los espusos son en promedio 1.,35€ más caros; los tintos 2.27€ y los rosados 2.10€
+  * El modelo en su conjunto es estadísticamente significativo (p-valor < 0.0000000000000022), esto es, hay      una probabilidad prácticamente nula de que las relaciones que hemos encontrado entre variables sean por      casualidad. Podemos entoces estar seguros de que el rating, la antigüedad y el tipo de vino influyen en      el precio.
+  
+**Refinado y evaluación del modelo**
+  - La eliminación de la variable NumberOfRatings (p-valor = 0.5404 > 0.05, no significativa) no afectó al        rendimiento del modelo, manteniendo el mismo R² (0.4631) y error estándar (13.88€), lo que confirma que       esta variable no era relevante para predecir el precio.
+  - El modelo muestra un error de predicción (RMSE) de aprox. ±13.88€, muy parecido en entrenamiento y en test     (13.61€). Esta consistencia en el error indica que el modelo es estable, aunque su precisión varía según      el rango de precios: es menos preciso para vinos económicos (donde 13€ es una diferencia importante) y más     fiable para vinos de gama alta (donde 13€ representa un porcentaje menor del precio).
+  
+## Análisis de Diferencias entre Tipos de Vino
+
+**Verificación de Supuestos:**
+   Los gráficos de diagnóstico muestran algunas desviaciones de normalidad y homocedasticidad, pero el gran tamaño muestral (>13,000 observaciones) garantiza la robustez del análisis.
+
+**ANOVA:**
+Hipótesis:
+   - H0: No hay diferencias en el precio medio entre tipos de vino
+   - H1: Al menos un tipo de vino tiene un precio medio diferente
+   
+   El ANOVA (F = 182.8 (alto), p < 0.00000000000002 que es < que 0.05) rechaza H0, confirmando diferencias      significativas en precios según el tipo de vino.
+
+**Test de Tukey:**
+   - Todas las comparaciones son significativas (p adj < 0.05) excepto tintos vs espumosos (p = 0.846)
+   - Los rosados muestran el patrón más distintivo:
+     * Mayor diferencia con espumosos (-13.79€)
+     * Mayor diferencia con tintos (+13.27€)
+     * Menor diferencia con blancos (-6.03€)
+
+## Conclusión Final
+
+## Conclusión Final
+
+## Conclusión Final
+
+Este análisis me ha permitido entender el mercado del vino en Vivino.com. El modelo desarrollado, aunque tiene un R² moderado (0.4631), revela patrones interesantes. 
+
+Las valoraciones de los usuarios muestran una fuerte relación con el precio: los vinos mejor valorados tienden a ser más caros, con una diferencia media de 10.46€ por cada punto adicional en su rating. La antigüedad también influye, aumentando el precio en 6.11€ por año. 
+
+El tipo de vino también es determinante, como confirma el ANOVA (p < 0.00000000000002): los espumosos y tintos tienen los precios más altos (sin diferencias significativas entre ellos), los blancos ocupan una posición intermedia, y los rosados son más económicos. El modelo predice mejor los precios altos que los bajos (como muestran los gráficos de residuos), el error de ±13.88€ es más problemático para vinos económicos. 
+
+Esto hace pensar que existen variables que no están reflejadas como la bodega y la región que afectan a los precios (lo que explicaría el R² moderado). Para futuros análisis, sería interesante incluir estas variables adicionales y quizás desarrollar modelos para diferentes rangos de precio, mejorando así la precisión de las predicciones.
+
+
+
